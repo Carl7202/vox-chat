@@ -1,0 +1,7 @@
+[VOX] Project scaffold created.
+[INFO] Frontend: index.html + vox.js
+[INFO] Backend: Flask app.py
+[INFO] Realtime: Supabase Broadcast signaling + WebRTC audio
+[INFO] Database: optional room/message schema in schema.sql
+[NOTE] Configure Supabase URL and anon key in vox.js before connecting.
+[NOTE] Use HTTPS for remote microphone access.
