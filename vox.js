@@ -1,0 +1,72 @@
+/* VOX client: Supabase Realtime broadcast + WebRTC audio.
+ * Set SUPABASE_URL and SUPABASE_ANON_KEY below. Never put a service_role key in frontend code.
+ */
+const SUPABASE_URL = "";
+const SUPABASE_ANON_KEY = "";
+const $ = (s) => document.querySelector(s);
+let supabase = null, channel = null, stream = null, roomId = "", userId = crypto.randomUUID();
+let muted = false, deafened = false, joined = false;
+const peers = new Map(), remoteAudio = new Map(), remoteNames = new Map();
+const config = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+function toast(message) { const el=$("#toast"); el.textContent=message; el.classList.add("show"); setTimeout(()=>el.classList.remove("show"),2600); }
+function cleanRoom(value) { return value.trim().toLowerCase().replace(/[^a-z0-9_-]/g,"").slice(0,40); }
+function ready() {
+ if (!window.supabase || !SUPABASE_URL || !SUPABASE_ANON_KEY) { toast("Configure Supabase URL and anon key in vox.js first."); return false; }
+ if (!supabase) supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+ return true;
+}
+function send(type, payload) { if (channel) channel.send({type:"broadcast",event:"signal",payload:{type,from:userId,room:roomId,...payload}}); }
+function addPerson(id,name,local=false) {
+ let card=document.querySelector('[data-person="'+CSS.escape(id)+'"]');
+ if(!card){ card=document.createElement("div"); card.className="person"; card.dataset.person=id; const face=document.createElement("div"); face.className="face"; face.textContent=local?"🎙":"👤"; const n=document.createElement("b"); n.className="personName"; n.textContent=name; const state=document.createElement("span"); state.className="personState"; state.textContent=local?(muted?"Muted":"Connected"):"Connecting…"; card.append(face,n,state); $("#people").querySelector(".empty")?.remove(); $("#people").append(card); }
+ card.querySelector(".personName").textContent=name; card.querySelector(".personState").textContent=local?(muted?"Muted":"Connected"):"Connected";
+ renderMembers();
+}
+function removePerson(id) { document.querySelector('[data-person="'+CSS.escape(id)+'"]')?.remove(); const audio=remoteAudio.get(id); if(audio)audio.remove(); remoteAudio.delete(id); remoteNames.delete(id); const pc=peers.get(id); if(pc)pc.close(); peers.delete(id); renderMembers(); if(!$("#people").children.length)$("#people").innerHTML='<div class="empty">Nobody is here yet.</div>'; }
+function renderMembers() { const list=$("#members"); list.replaceChildren(); const all=[{id:userId,name:$("#username").value||"You",local:true},...Array.from(remoteNames,([id,name])=>({id,name}))]; $("#peerCount").textContent=all.length; all.forEach(p=>{const row=document.createElement("div");row.className="member";const name=document.createElement("b");name.textContent=p.name+(p.local?" (you)":"");const status=document.createElement("span");status.textContent=p.local?(muted?"Muted":"Online"):"Connected";row.append(name,status);list.append(row);}); }
+async function peerFor(id,name,initiator) {
+ if(peers.has(id))return peers.get(id);
+ const pc=new RTCPeerConnection(config); peers.set(id,pc); remoteNames.set(id,name); addPerson(id,name);
+ if(stream)stream.getTracks().forEach(track=>pc.addTrack(track,stream));
+ pc.onicecandidate=e=>{if(e.candidate)send("candidate",{to:id,candidate:e.candidate});};
+ pc.ontrack=e=>{let audio=remoteAudio.get(id);if(!audio){audio=document.createElement("audio");audio.autoplay=true;audio.playsInline=true;audio.volume=deafened?0:Number($("#volume").value)/100;document.body.append(audio);remoteAudio.set(id,audio);}audio.srcObject=e.streams[0];audio.play().catch(()=>toast("Click the page once to enable audio playback."));};
+ pc.onconnectionstatechange=()=>{if(["failed","closed","disconnected"].includes(pc.connectionState)&&pc.connectionState!=="disconnected")removePerson(id);};
+ if(initiator){const offer=await pc.createOffer();await pc.setLocalDescription(offer);send("offer",{to:id,description:pc.localDescription,name:$("#username").value});}
+ return pc;
+}
+async function handleSignal(message) {
+ const p=message.payload;if(!p||p.from===userId||p.room!==roomId)return;if(p.to&&p.to!==userId)return;
+ try {
+  if(p.type==="hello"){if(p.from<userId){const pc=await peerFor(p.from,p.name||"Guest",false);const offer=await pc.createOffer();await pc.setLocalDescription(offer);send("offer",{to:p.from,description:pc.localDescription,name:$("#username").value});}else{await peerFor(p.from,p.name||"Guest",false);}}
+  if(p.type==="offer"){const pc=await peerFor(p.from,p.name||"Guest",false);await pc.setRemoteDescription(p.description);const answer=await pc.createAnswer();await pc.setLocalDescription(answer);send("answer",{to:p.from,description:pc.localDescription,name:$("#username").value});}
+  if(p.type==="answer"){const pc=peers.get(p.from);if(pc)await pc.setRemoteDescription(p.description);}
+  if(p.type==="candidate"){const pc=peers.get(p.from);if(pc&&p.candidate)await pc.addIceCandidate(p.candidate);}
+  if(p.type==="chat"){const line=document.createElement("p");const b=document.createElement("b");b.textContent=(p.name||"Guest")+": ";line.append(b,document.createTextNode(p.text||""));$("#messages").append(line);$("#messages").scrollTop=$("#messages").scrollHeight;}
+  if(p.type==="bye")removePerson(p.from);
+ }catch(err){console.error("VOX signaling error",err);toast("Connection issue. Check room settings and network.");}
+}
+async function joinRoom() {
+ if(joined)return toast("You are already in a room.");if(!ready())return;
+ roomId=cleanRoom($("#roomCode").value)||"general";$("#roomCode").value=roomId;
+ try {
+  stream=await navigator.mediaDevices.getUserMedia({audio:{deviceId:$("#inputDevice").value||undefined,echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
+  stream.getAudioTracks().forEach(t=>t.enabled=true);
+  channel=supabase.channel("vox-room-"+roomId,{config:{broadcast:{self:false}}});
+  channel.on("broadcast",{event:"signal"},handleSignal);
+  const result=await channel.subscribe(status=>{if(status==="SUBSCRIBED"){joined=true;$("#connectionState").textContent="Connected · "+roomId;$("#micStatus").textContent="Microphone connected. Say hello!";$("#chatRoom").textContent="# "+roomId;addPerson(userId,$("#username").value||"You",true);send("hello",{name:$("#username").value||"Guest"});setTimeout(()=>send("hello",{name:$("#username").value||"Guest"}),700);$("#join").textContent="Connected";toast("Joined "+roomId);}else if(status==="CHANNEL_ERROR"||status==="TIMED_OUT"){toast("Supabase connection failed. Check your project settings.");}});
+ } catch(err){console.error(err);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;toast(err.name==="NotAllowedError"?"Microphone permission denied.":"Could not join. Check microphone and Supabase settings.");}
+}
+async function leaveRoom(){if(!joined){toast("You are not in a room.");return;}send("bye",{});joined=false;muted=false;deafened=false;if(channel){await supabase.removeChannel(channel);channel=null;}for(const id of [...peers.keys()])removePerson(id);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;$("#connectionState").textContent="Not connected";$("#micStatus").textContent="You left the room.";$("#join").textContent="Join voice room";$("#mute").classList.remove("on");$("#deafen").classList.remove("on");toast("Left voice room.");}
+$("#join").onclick=joinRoom;$("#leave").onclick=leaveRoom;
+$("#mute").onclick=()=>{if(!stream)return toast("Join a room first.");muted=!muted;stream.getAudioTracks().forEach(t=>t.enabled=!muted);$("#mute").classList.toggle("on",muted);$("#micStatus").textContent=muted?"Microphone muted":"Microphone live";const local=document.querySelector('[data-person="'+CSS.escape(userId)+'"] .personState');if(local)local.textContent=muted?"Muted":"Connected";renderMembers();};
+$("#deafen").onclick=()=>{deafened=!deafened;remoteAudio.forEach(a=>a.volume=deafened?0:Number($("#volume").value)/100);$("#deafen").classList.toggle("on",deafened);toast(deafened?"Deafened":"Audio restored");};
+$("#volume").oninput=e=>{ $("#volumeValue").textContent=e.target.value+"%";remoteAudio.forEach(a=>a.volume=deafened?0:Number(e.target.value)/100);};
+$("#chatToggle").onclick=()=>$("#chat").classList.toggle("hidden");$("#settingsToggle").onclick=()=>$("#settings").scrollIntoView({behavior:"smooth"});
+document.querySelectorAll(".room").forEach(btn=>btn.onclick=()=>{document.querySelectorAll(".room").forEach(b=>b.classList.remove("selected"));btn.classList.add("selected");$("#roomTitle").textContent=btn.dataset.room;$("#roomCode").value=btn.dataset.room.toLowerCase();$("#chatRoom").textContent="# "+btn.dataset.room.toLowerCase();});
+$("#invite").onclick=async()=>{const url=location.origin+location.pathname+"?room="+encodeURIComponent(roomId||cleanRoom($("#roomCode").value)||"general");try{await navigator.clipboard.writeText(url);toast("Invite link copied");}catch{prompt("Copy this room link:",url);}};
+$("#chatForm").onsubmit=e=>{e.preventDefault();const input=$("#messageInput"),text=input.value.trim();if(!text)return;if(!joined||!channel)return toast("Join a room before chatting.");const name=$("#username").value.trim()||"Guest";send("chat",{name,text});const p=document.createElement("p"),b=document.createElement("b");b.textContent=name+": ";p.append(b,document.createTextNode(text));$("#messages").append(p);$("#messages").scrollTop=$("#messages").scrollHeight;input.value="";};
+async function listDevices(){try{const devices=await navigator.mediaDevices.enumerateDevices();for(const [kind,id] of [["audioinput","inputDevice"],["audiooutput","outputDevice"]]){const select=$("#"+id),old=select.value;select.replaceChildren(new Option(kind==="audioinput"?"Default microphone":"Default output",""));devices.filter(d=>d.kind===kind).forEach((d,i)=>select.add(new Option(d.label||((kind==="audioinput"?"Microphone ":"Output ")+(i+1)),d.deviceId)));select.value=old;}}catch{}}
+$("#inputDevice").onfocus=async()=>{try{const s=await navigator.mediaDevices.getUserMedia({audio:true});s.getTracks().forEach(t=>t.stop());await listDevices();}catch{toast("Microphone permission is required to list devices.");}};
+$("#outputDevice").onchange=()=>toast("Output device routing depends on browser support.");
+const params=new URLSearchParams(location.search);if(params.has("room"))$("#roomCode").value=cleanRoom(params.get("room"))||"general";
+if(!SUPABASE_URL||!SUPABASE_ANON_KEY)$("#connectionState").textContent="Setup required";
