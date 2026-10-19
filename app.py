@@ -1,4 +1,4 @@
-"""VOX voice-chat web server. Run with: python app.py"""
+"""GUITAR LAB local preview server. GitHub Pages serves static files directly."""
 import os
 from flask import Flask, send_from_directory, jsonify
 
@@ -10,9 +10,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"app": "VOX", "status": "ok"})
+    return jsonify({"app": "GUITAR LAB", "status": "ok"})
 
 if __name__ == "__main__":
-    # For LAN testing use 0.0.0.0; production should use HTTPS.
-    app.run(host=os.getenv("HOST", "127.0.0.1"),
-            port=int(os.getenv("PORT", "5000")), debug=False)
+    app.run(host=os.getenv("HOST", "127.0.0.1"), port=int(os.getenv("PORT", "5000")), debug=False)
