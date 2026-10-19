@@ -1,8 +1,8 @@
 /* VOX client: Supabase Realtime broadcast + WebRTC audio.
- * Set SUPABASE_URL and SUPABASE_ANON_KEY below. Never put a service_role key in frontend code.
+ * Publishable key is designed for browser use. Never put a service_role/secret key here.
  */
-const SUPABASE_URL = "";
-const SUPABASE_ANON_KEY = "";
+const SUPABASE_URL = "https://kmljfpyforhzgnhwutyk.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_0esq0ZdJFftOIqzz0F42vQ_COodg5pV";
 const $ = (s) => document.querySelector(s);
 let supabase = null, channel = null, stream = null, roomId = "", userId = crypto.randomUUID();
 let muted = false, deafened = false, joined = false;
