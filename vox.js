@@ -6,7 +6,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_0esq0ZdJFftOIqzz0F42vQ_COodg5pV";
 const $ = (s) => document.querySelector(s);
 let supabase = null, channel = null, stream = null, roomId = "", userId = crypto.randomUUID();
 let muted = false, deafened = false, joined = false;
-const peers = new Map(), remoteAudio = new Map(), remoteNames = new Map();
+const peers = new Map(), remoteAudio = new Map(), remoteNames = new Map(), pendingCandidates = new Map();
 const config = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 function toast(message) { const el=$("#toast"); el.textContent=message; el.classList.add("show"); setTimeout(()=>el.classList.remove("show"),2600); }
 function cleanRoom(value) { return value.trim().toLowerCase().replace(/[^a-z0-9_-]/g,"").slice(0,40); }
@@ -15,7 +15,7 @@ function ready() {
  if (!supabase) supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
  return true;
 }
-function send(type, payload) { if (channel) channel.send({type:"broadcast",event:"signal",payload:{type,from:userId,room:roomId,...payload}}); }
+function send(type, payload) { if (channel) return channel.send({type:"broadcast",event:"signal",payload:{type,from:userId,room:roomId,...payload}}); return Promise.resolve("CLOSED"); }
 function addPerson(id,name,local=false) {
  let card=document.querySelector('[data-person="'+CSS.escape(id)+'"]');
  if(!card){ card=document.createElement("div"); card.className="person"; card.dataset.person=id; const face=document.createElement("div"); face.className="face"; face.textContent=local?"🎙":"👤"; const n=document.createElement("b"); n.className="personName"; n.textContent=name; const state=document.createElement("span"); state.className="personState"; state.textContent=local?(muted?"Muted":"Connected"):"Connecting…"; card.append(face,n,state); $("#people").querySelector(".empty")?.remove(); $("#people").append(card); }
@@ -38,9 +38,9 @@ async function handleSignal(message) {
  const p=message.payload;if(!p||p.from===userId||p.room!==roomId)return;if(p.to&&p.to!==userId)return;
  try {
   if(p.type==="hello"){if(p.from<userId){const pc=await peerFor(p.from,p.name||"Guest",false);const offer=await pc.createOffer();await pc.setLocalDescription(offer);send("offer",{to:p.from,description:pc.localDescription,name:$("#username").value});}else{await peerFor(p.from,p.name||"Guest",false);}}
-  if(p.type==="offer"){const pc=await peerFor(p.from,p.name||"Guest",false);await pc.setRemoteDescription(p.description);const answer=await pc.createAnswer();await pc.setLocalDescription(answer);send("answer",{to:p.from,description:pc.localDescription,name:$("#username").value});}
-  if(p.type==="answer"){const pc=peers.get(p.from);if(pc)await pc.setRemoteDescription(p.description);}
-  if(p.type==="candidate"){const pc=peers.get(p.from);if(pc&&p.candidate)await pc.addIceCandidate(p.candidate);}
+  if(p.type==="offer"){const pc=await peerFor(p.from,p.name||"Guest",false);await pc.setRemoteDescription(p.description);for(const candidate of (pendingCandidates.get(p.from)||[]))await pc.addIceCandidate(candidate);pendingCandidates.delete(p.from);const answer=await pc.createAnswer();await pc.setLocalDescription(answer);send("answer",{to:p.from,description:pc.localDescription,name:$("#username").value});}
+  if(p.type==="answer"){const pc=peers.get(p.from);if(pc){await pc.setRemoteDescription(p.description);for(const candidate of (pendingCandidates.get(p.from)||[]))await pc.addIceCandidate(candidate);pendingCandidates.delete(p.from);}}
+  if(p.type==="candidate"){const pc=peers.get(p.from);if(pc&&p.candidate){if(pc.remoteDescription)await pc.addIceCandidate(p.candidate);else{if(!pendingCandidates.has(p.from))pendingCandidates.set(p.from,[]);pendingCandidates.get(p.from).push(p.candidate);}}}
   if(p.type==="chat"){const line=document.createElement("p");const b=document.createElement("b");b.textContent=(p.name||"Guest")+": ";line.append(b,document.createTextNode(p.text||""));$("#messages").append(line);$("#messages").scrollTop=$("#messages").scrollHeight;}
   if(p.type==="bye")removePerson(p.from);
  }catch(err){console.error("VOX signaling error",err);toast("Connection issue. Check room settings and network.");}
@@ -53,8 +53,8 @@ async function joinRoom() {
   stream.getAudioTracks().forEach(t=>t.enabled=true);
   channel=supabase.channel("vox-room-"+roomId,{config:{broadcast:{self:false}}});
   channel.on("broadcast",{event:"signal"},handleSignal);
-  const result=await channel.subscribe(status=>{if(status==="SUBSCRIBED"){joined=true;$("#connectionState").textContent="Connected · "+roomId;$("#micStatus").textContent="Microphone connected. Say hello!";$("#chatRoom").textContent="# "+roomId;addPerson(userId,$("#username").value||"You",true);send("hello",{name:$("#username").value||"Guest"});setTimeout(()=>send("hello",{name:$("#username").value||"Guest"}),700);$("#join").textContent="Connected";toast("Joined "+roomId);}else if(status==="CHANNEL_ERROR"||status==="TIMED_OUT"){toast("Supabase connection failed. Check your project settings.");}});
- } catch(err){console.error(err);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;toast(err.name==="NotAllowedError"?"Microphone permission denied.":"Could not join. Check microphone and Supabase settings.");}
+  await channel.subscribe(status=>{if(status==="SUBSCRIBED"){joined=true;$("#join").disabled=false;$("#connectionState").textContent="Connected · "+roomId;$("#micStatus").textContent="Microphone connected. Say hello!";$("#chatRoom").textContent="# "+roomId;addPerson(userId,$("#username").value||"You",true);send("hello",{name:$("#username").value||"Guest"});setTimeout(()=>send("hello",{name:$("#username").value||"Guest"}),700);$("#join").textContent="Connected";toast("Joined "+roomId);}else if(status==="CHANNEL_ERROR"||status==="TIMED_OUT"){$("#join").disabled=false;$("#join").textContent="Join voice room";$("#connectionState").textContent="Connection failed";toast("Supabase Realtime failed ("+status+"). Check Realtime is enabled for this project.");}});
+ } catch(err){console.error("VOX join error:",err);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;if(channel){try{await supabase.removeChannel(channel);}catch{}channel=null;}$("#join").disabled=false;$("#join").textContent="Join voice room";$("#connectionState").textContent="Not connected";toast(err.name==="NotAllowedError"?"Microphone permission denied. Allow it in browser settings.":err.name==="NotFoundError"?"No microphone was found. Connect or select one.":(err.message||"Could not join room. Check the browser console."));}
 }
 async function leaveRoom(){if(!joined){toast("You are not in a room.");return;}send("bye",{});joined=false;muted=false;deafened=false;if(channel){await supabase.removeChannel(channel);channel=null;}for(const id of [...peers.keys()])removePerson(id);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;$("#connectionState").textContent="Not connected";$("#micStatus").textContent="You left the room.";$("#join").textContent="Join voice room";$("#mute").classList.remove("on");$("#deafen").classList.remove("on");toast("Left voice room.");}
 $("#join").onclick=joinRoom;$("#leave").onclick=leaveRoom;
