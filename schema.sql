@@ -1,38 +1,18 @@
--- VOX optional persistent schema for Supabase (PostgreSQL).
--- Run in Supabase SQL Editor. Do not put service_role keys in the client.
-create extension if not exists pgcrypto;
-
-create table if not exists public.vox_rooms (
+-- GUITAR LAB practice history. Safe to run more than once.
+create table if not exists public.guitar_practice_logs (
   id uuid primary key default gen_random_uuid(),
-  slug text not null unique check (slug ~ '^[a-z0-9_-]{1,40}$'),
-  title text not null default 'General',
+  user_id uuid not null references auth.users(id) on delete cascade,
+  activity text not null check (activity in ('chords','riffs','timing','scales','ear','speed','lesson')),
+  score integer not null default 0 check (score between 0 and 100),
+  duration_seconds integer not null default 0 check (duration_seconds between 0 and 86400),
+  details jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
-
-create table if not exists public.vox_messages (
-  id uuid primary key default gen_random_uuid(),
-  room_id uuid not null references public.vox_rooms(id) on delete cascade,
-  display_name text not null check (char_length(display_name) between 1 and 24),
-  body text not null check (char_length(body) between 1 and 1000),
-  created_at timestamptz not null default now()
-);
-
-create index if not exists vox_messages_room_created_idx
-  on public.vox_messages(room_id, created_at desc);
-
-alter table public.vox_rooms enable row level security;
-alter table public.vox_messages enable row level security;
-
--- Starter read access for demo room discovery/history.
-drop policy if exists "VOX rooms readable" on public.vox_rooms;
-create policy "VOX rooms readable" on public.vox_rooms for select to anon, authenticated using (true);
-drop policy if exists "VOX rooms can be created" on public.vox_rooms;
-create policy "VOX rooms can be created" on public.vox_rooms for insert to anon, authenticated with check (slug ~ '^[a-z0-9_-]{1,40}$');
-
-drop policy if exists "VOX messages readable" on public.vox_messages;
-create policy "VOX messages readable" on public.vox_messages for select to anon, authenticated using (true);
-drop policy if exists "VOX messages can be sent" on public.vox_messages;
-create policy "VOX messages can be sent" on public.vox_messages for insert to anon, authenticated with check (char_length(display_name) between 1 and 24 and char_length(body) between 1 and 1000);
-
-grant select, insert on public.vox_rooms to anon, authenticated;
-grant select, insert on public.vox_messages to anon, authenticated;
+create index if not exists guitar_practice_logs_user_created_idx on public.guitar_practice_logs(user_id, created_at desc);
+alter table public.guitar_practice_logs enable row level security;
+drop policy if exists "Users can read own guitar practice" on public.guitar_practice_logs;
+create policy "Users can read own guitar practice" on public.guitar_practice_logs for select to authenticated using ((select auth.uid()) = user_id);
+drop policy if exists "Users can insert own guitar practice" on public.guitar_practice_logs;
+create policy "Users can insert own guitar practice" on public.guitar_practice_logs for insert to authenticated with check ((select auth.uid()) = user_id);
+revoke all on table public.guitar_practice_logs from anon;
+grant select, insert on table public.guitar_practice_logs to authenticated;
