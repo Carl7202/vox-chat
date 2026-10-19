@@ -46,15 +46,25 @@ async function handleSignal(message) {
  }catch(err){console.error("VOX signaling error",err);toast("Connection issue. Check room settings and network.");}
 }
 async function joinRoom() {
- if(joined)return toast("You are already in a room.");if(!ready())return;
- roomId=cleanRoom($("#roomCode").value)||"general";$("#roomCode").value=roomId;
+ if(joined)return toast("You are already in a room.");
+ if(!ready())return;
+ const joinButton=$("#join");
+ joinButton.disabled=true;
+ joinButton.textContent="Connecting…";
+ $("#connectionState").textContent="Requesting microphone…";
+ $("#micStatus").textContent="Waiting for microphone permission. Check your browser's address bar for a permission prompt.";
+ roomId=cleanRoom($("#roomCode").value)||"general";
+ $("#roomCode").value=roomId;
  try {
+  if(!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia!=="function") {
+   throw new Error("Microphone access is unavailable. Open the published HTTPS GitHub Pages site in a normal browser tab.");
+  }
   stream=await navigator.mediaDevices.getUserMedia({audio:{deviceId:$("#inputDevice").value||undefined,echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
   stream.getAudioTracks().forEach(t=>t.enabled=true);
   channel=supabase.channel("vox-room-"+roomId,{config:{broadcast:{self:false}}});
   channel.on("broadcast",{event:"signal"},handleSignal);
-  await channel.subscribe(status=>{if(status==="SUBSCRIBED"){joined=true;$("#join").disabled=false;$("#connectionState").textContent="Connected · "+roomId;$("#micStatus").textContent="Microphone connected. Say hello!";$("#chatRoom").textContent="# "+roomId;addPerson(userId,$("#username").value||"You",true);send("hello",{name:$("#username").value||"Guest"});setTimeout(()=>send("hello",{name:$("#username").value||"Guest"}),700);$("#join").textContent="Connected";toast("Joined "+roomId);}else if(status==="CHANNEL_ERROR"||status==="TIMED_OUT"){$("#join").disabled=false;$("#join").textContent="Join voice room";$("#connectionState").textContent="Connection failed";toast("Supabase Realtime failed ("+status+"). Check Realtime is enabled for this project.");}});
- } catch(err){console.error("VOX join error:",err);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;if(channel){try{await supabase.removeChannel(channel);}catch{}channel=null;}$("#join").disabled=false;$("#join").textContent="Join voice room";$("#connectionState").textContent="Not connected";toast(err.name==="NotAllowedError"?"Microphone permission denied. Allow it in browser settings.":err.name==="NotFoundError"?"No microphone was found. Connect or select one.":(err.message||"Could not join room. Check the browser console."));}
+  await channel.subscribe((status,err)=>{console.info("VOX Supabase channel status:",status,err||"");if(status==="SUBSCRIBED"){joined=true;joinButton.disabled=false;$("#connectionState").textContent="Connected · "+roomId;$("#micStatus").textContent="Microphone connected. Say hello!";$("#chatRoom").textContent="# "+roomId;addPerson(userId,$("#username").value||"You",true);send("hello",{name:$("#username").value||"Guest"});setTimeout(()=>send("hello",{name:$("#username").value||"Guest"}),700);joinButton.textContent="Connected";toast("Joined "+roomId);}else if(status==="CHANNEL_ERROR"||status==="TIMED_OUT"||status==="CLOSED"){joinButton.disabled=false;joinButton.textContent="Join voice room";$("#connectionState").textContent="Connection failed";$("#micStatus").textContent="Could not connect to Supabase Realtime. Check project Realtime settings and browser console.";console.error("VOX Realtime subscription failed:",status,err);toast("Supabase Realtime failed: "+status+". See browser console for details.");}});
+ } catch(err){console.error("VOX join error:",err);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;if(channel){try{await supabase.removeChannel(channel);}catch{}channel=null;}joinButton.disabled=false;joinButton.textContent="Join voice room";$("#connectionState").textContent="Not connected";const message=err.name==="NotAllowedError"?"Microphone permission was denied or blocked. Allow microphone access for this site in Firefox's address-bar permissions.":err.name==="NotFoundError"?"No microphone was found. Connect or select one.":err.name==="NotReadableError"?"The microphone is busy or unavailable. Close other apps using it and retry.":err.name==="TypeError"?"Microphone access is unavailable in this page context. Make sure you opened the HTTPS GitHub Pages website directly.":(err.message||"Could not join room. Check the browser console.");$("#micStatus").textContent=message;toast(message);}
 }
 async function leaveRoom(){if(!joined){toast("You are not in a room.");return;}send("bye",{});joined=false;muted=false;deafened=false;if(channel){await supabase.removeChannel(channel);channel=null;}for(const id of [...peers.keys()])removePerson(id);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;$("#connectionState").textContent="Not connected";$("#micStatus").textContent="You left the room.";$("#join").textContent="Join voice room";$("#mute").classList.remove("on");$("#deafen").classList.remove("on");toast("Left voice room.");}
 $("#join").onclick=joinRoom;$("#leave").onclick=leaveRoom;
